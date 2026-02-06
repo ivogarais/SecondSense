@@ -14,6 +14,7 @@ data class NodeInfo(
     val id: String,
     val text: String? = null,
     val contentDesc: String? = null,
+    val viewId: String? = null,
     val className: String? = null,
     val clickable: Boolean,
     val editable: Boolean,
