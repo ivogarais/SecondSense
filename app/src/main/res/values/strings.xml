@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">SecondSense</string>
+    <string name="accessibility_service_label">SecondSense Service</string>
+    <string name="accessibility_service_description">Reads on-screen UI metadata to support local assistant actions.</string>
+    <string name="main_title">SecondSense Debug Console</string>
+    <string name="main_subtitle">Use the buttons below to open accessibility settings and run a sample action plan.</string>
+    <string name="open_accessibility_settings">Open Accessibility Settings</string>
+    <string name="run_debug_plan">Run Debug Plan</string>
+    <string name="debug_plan_sent">Debug plan broadcast sent.</string>
+</resources>
