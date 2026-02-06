@@ -3,8 +3,10 @@
     <string name="accessibility_service_label">SecondSense Service</string>
     <string name="accessibility_service_description">Reads on-screen UI metadata to support local assistant actions.</string>
     <string name="main_title">SecondSense Debug Console</string>
-    <string name="main_subtitle">Use the buttons below to open accessibility settings and run a sample action plan.</string>
+    <string name="main_subtitle">Runs a compact step-by-step agent loop using current screen context.</string>
+    <string name="goal_input_hint">Example: Open Instagram, go to my messages, and open Bob.</string>
+    <string name="default_goal_text">Open Instagram and go to my messages.</string>
     <string name="open_accessibility_settings">Open Accessibility Settings</string>
-    <string name="run_debug_plan">Run Debug Plan</string>
-    <string name="debug_plan_sent">Debug plan broadcast sent.</string>
+    <string name="run_mock_goal">Run Goal (Mock LLM)</string>
+    <string name="mock_goal_sent">Goal sent: %1$s</string>
 </resources>
