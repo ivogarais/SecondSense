@@ -5,49 +5,43 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.graphics.Rect
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
 import com.secondsense.BuildConfig
 import com.secondsense.agent.Action
 import com.secondsense.agent.AgentLoopController
+import com.secondsense.agent.AgentRunner
 import com.secondsense.agent.LoopResult
+import com.secondsense.agent.MockAgentModelClient
+import com.secondsense.agent.PromptBuilder
+import com.secondsense.agent.RunResult
 import com.secondsense.automation.ActionExecutionResult
 import com.secondsense.automation.ActionExecutor
-import java.time.Instant
-import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 
 class MyAccessibilityService : AccessibilityService() {
 
-    @OptIn(ExperimentalSerializationApi::class)
-    private val json = Json {
-        encodeDefaults = true
-        explicitNulls = false
-    }
-
-    private var lastLoggedAtMs: Long = 0L
+    private var lastSummaryLoggedAtMs: Long = 0L
     private val actionExecutor by lazy { ActionExecutor(this) }
     private val loopController by lazy { AgentLoopController(::executeActionsInternal) }
+    private val screenContextProvider by lazy {
+        ScreenContextProvider(
+            service = this,
+            maxNodes = MAX_CONTEXT_NODES
+        )
+    }
+
+    @Volatile
+    private var goalRunInProgress = false
+
     private var debugReceiverRegistered = false
     private val debugReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != ACTION_RUN_MODEL_OUTPUT) return
-            Log.d(TAG, "Received debug model-output broadcast.")
-
-            val rawModelOutput = intent.getStringExtra(EXTRA_MODEL_OUTPUT)
-            if (rawModelOutput.isNullOrBlank()) {
-                Log.w(TAG, "Debug broadcast missing EXTRA_MODEL_OUTPUT.")
-                return
+            when (intent?.action) {
+                ACTION_RUN_MODEL_OUTPUT -> handleRawModelOutput(intent)
+                ACTION_RUN_AGENT_GOAL -> handleGoalRun(intent)
             }
-
-            val userConfirmed = intent.getBooleanExtra(EXTRA_USER_CONFIRMED, false)
-            val result = loopController.handleModelOutput(rawModelOutput, userConfirmed)
-            logLoopResult(result)
         }
     }
 
@@ -55,13 +49,19 @@ class MyAccessibilityService : AccessibilityService() {
         if (event == null) return
 
         val now = SystemClock.elapsedRealtime()
-        if (now - lastLoggedAtMs < LOG_THROTTLE_MS) return
+        if (now - lastSummaryLoggedAtMs < LOG_SUMMARY_THROTTLE_MS) return
 
-        val root = rootInActiveWindow ?: return
-        val screenContext = buildScreenContext(root, event.packageName?.toString())
+        val screenContext = screenContextProvider.capture() ?: return
+        lastSummaryLoggedAtMs = now
 
-        lastLoggedAtMs = now
-        Log.d(TAG, json.encodeToString(screenContext))
+        Log.d(
+            TAG,
+            "ScreenContext app=${screenContext.currentAppPackage ?: "unknown"}, nodes=${screenContext.nodes.size}"
+        )
+
+        if (BuildConfig.DEBUG && DEBUG_VERBOSE_CONTEXT_LOGS) {
+            Log.v(TAG, "ScreenContext detail: $screenContext")
+        }
     }
 
     override fun onInterrupt() {
@@ -94,66 +94,64 @@ class MyAccessibilityService : AccessibilityService() {
         return actionExecutor.execute(actions)
     }
 
-    private fun buildScreenContext(
-        root: AccessibilityNodeInfo,
-        fallbackPackage: String?
-    ): ScreenContext {
-        val currentPackage = root.packageName?.toString() ?: fallbackPackage
-        val nodes = mutableListOf<NodeInfo>()
-        val stack = ArrayDeque<AccessibilityNodeInfo>()
-        var nodeIdCounter = 1
+    private fun handleRawModelOutput(intent: Intent) {
+        Log.d(TAG, "Received debug model-output broadcast.")
 
-        stack.add(root)
-
-        while (stack.isNotEmpty() && nodes.size < MAX_NODES) {
-            val node = stack.removeLast()
-            for (i in node.childCount - 1 downTo 0) {
-                node.getChild(i)?.let(stack::addLast)
-            }
-
-            if (shouldInclude(node)) {
-                nodes += NodeInfo(
-                    id = "n${nodeIdCounter++}",
-                    text = node.text?.toString()?.takeIf(String::isNotBlank),
-                    contentDesc = node.contentDescription?.toString()?.takeIf(String::isNotBlank),
-                    className = node.className?.toString(),
-                    clickable = node.isClickable,
-                    editable = node.isEditable,
-                    enabled = node.isEnabled,
-                    focusable = node.isFocusable,
-                    bounds = node.bounds()
-                )
-            }
+        val rawModelOutput = intent.getStringExtra(EXTRA_MODEL_OUTPUT)
+        if (rawModelOutput.isNullOrBlank()) {
+            Log.w(TAG, "Debug broadcast missing EXTRA_MODEL_OUTPUT.")
+            return
         }
 
-        return ScreenContext(
-            currentAppPackage = currentPackage,
-            timestamp = Instant.now().toString(),
-            nodes = nodes
-        )
+        val userConfirmed = intent.getBooleanExtra(EXTRA_USER_CONFIRMED, false)
+        val result = loopController.handleModelOutput(rawModelOutput, userConfirmed)
+        logLoopResult(result)
     }
 
-    private fun shouldInclude(node: AccessibilityNodeInfo): Boolean {
-        val hasText = !node.text.isNullOrBlank()
-        val hasDesc = !node.contentDescription.isNullOrBlank()
-        return node.isClickable || node.isEditable || hasText || hasDesc
-    }
+    private fun handleGoalRun(intent: Intent) {
+        val goal = intent.getStringExtra(EXTRA_USER_GOAL)
+        if (goal.isNullOrBlank()) {
+            Log.w(TAG, "Goal broadcast missing EXTRA_USER_GOAL.")
+            return
+        }
 
-    private fun AccessibilityNodeInfo.bounds(): Bounds {
-        val rect = Rect()
-        getBoundsInScreen(rect)
-        return Bounds(
-            left = rect.left,
-            top = rect.top,
-            right = rect.right,
-            bottom = rect.bottom
-        )
+        if (goalRunInProgress) {
+            Log.w(TAG, "A goal run is already in progress.")
+            return
+        }
+
+        val userConfirmed = intent.getBooleanExtra(EXTRA_USER_CONFIRMED, false)
+
+        Thread {
+            goalRunInProgress = true
+            try {
+                Log.d(TAG, "Starting mock goal run: $goal")
+
+                val runner = AgentRunner(
+                    modelClient = MockAgentModelClient(),
+                    loopController = loopController,
+                    promptBuilder = PromptBuilder(),
+                    screenContextProvider = { screenContextProvider.capture() }
+                )
+
+                val runResult = runner.run(goal = goal, userConfirmed = userConfirmed)
+                logRunResult(runResult)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Goal run crashed: ${t.message}", t)
+            } finally {
+                goalRunInProgress = false
+            }
+        }.start()
     }
 
     private fun registerDebugReceiver() {
         if (debugReceiverRegistered) return
 
-        val filter = IntentFilter(ACTION_RUN_MODEL_OUTPUT)
+        val filter = IntentFilter().apply {
+            addAction(ACTION_RUN_MODEL_OUTPUT)
+            addAction(ACTION_RUN_AGENT_GOAL)
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val receiverFlags = if (BuildConfig.DEBUG) {
                 Context.RECEIVER_EXPORTED
@@ -219,13 +217,42 @@ class MyAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun logRunResult(result: RunResult) {
+        when (result) {
+            is RunResult.Completed -> {
+                Log.d(TAG, "RunResult.Completed result=${result.result}")
+            }
+
+            is RunResult.NeedsClarification -> {
+                Log.d(TAG, "RunResult.NeedsClarification question=${result.question}")
+            }
+
+            is RunResult.NeedsConfirmation -> {
+                Log.d(TAG, "RunResult.NeedsConfirmation prompt=${result.prompt}")
+            }
+
+            is RunResult.MaxStepsReached -> {
+                Log.w(TAG, "RunResult.MaxStepsReached maxSteps=${result.maxSteps}")
+            }
+
+            is RunResult.Failed -> {
+                Log.e(TAG, "RunResult.Failed reason=${result.reason}, lastError=${result.lastError}")
+            }
+        }
+    }
+
     companion object {
         private const val TAG = "MyAccessibilityService"
-        private const val LOG_THROTTLE_MS = 500L
-        private const val MAX_NODES = 80
+
+        private const val LOG_SUMMARY_THROTTLE_MS = 1200L
+        private const val MAX_CONTEXT_NODES = 40
+        private const val DEBUG_VERBOSE_CONTEXT_LOGS = false
 
         const val ACTION_RUN_MODEL_OUTPUT = "com.secondsense.action.RUN_MODEL_OUTPUT"
+        const val ACTION_RUN_AGENT_GOAL = "com.secondsense.action.RUN_AGENT_GOAL"
+
         const val EXTRA_MODEL_OUTPUT = "extra_model_output"
+        const val EXTRA_USER_GOAL = "extra_user_goal"
         const val EXTRA_USER_CONFIRMED = "extra_user_confirmed"
     }
 }
