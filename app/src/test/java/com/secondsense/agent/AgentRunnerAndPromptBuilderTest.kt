@@ -104,6 +104,57 @@ class AgentRunnerAndPromptBuilderTest {
         assertEquals("Done in mock", (result as RunResult.Completed).result)
     }
 
+    @Test
+    @OptIn(ExperimentalSerializationApi::class)
+    fun agentRunner_bootstrapsOpenApp_beforePlannerWhenGoalNamesTargetApp() {
+        val json = kotlinx.serialization.json.Json {
+            encodeDefaults = true
+            explicitNulls = false
+            classDiscriminator = "type"
+        }
+        val done = json.encodeToString(
+            AgentResponse(
+                status = Status.DONE,
+                result = "Reached target app."
+            )
+        )
+        val scriptedClient = ScriptedClient(listOf(done))
+        val executedActions = mutableListOf<Action>()
+
+        val loopController = AgentLoopController { actions ->
+            executedActions += actions
+            actions.map {
+                ActionExecutionResult(
+                    action = it,
+                    success = true,
+                    message = "ok"
+                )
+            }
+        }
+
+        val runner = AgentRunner(
+            modelClient = scriptedClient,
+            loopController = loopController,
+            promptBuilder = PromptBuilder(),
+            screenContextProvider = {
+                ScreenContext(
+                    currentAppPackage = "com.secondsense",
+                    timestamp = "2026-02-06T20:00:00Z",
+                    nodes = emptyList()
+                )
+            },
+            sleepFn = {},
+            config = AgentRunner.Config(maxSteps = 4, stepDelayMs = 0)
+        )
+
+        val result = runner.run(goal = "Open Instagram and go to messages", userConfirmed = true)
+
+        assertTrue(result is RunResult.Completed)
+        assertTrue(executedActions.first() is Action.OpenApp)
+        assertEquals("Instagram", (executedActions.first() as Action.OpenApp).app)
+        assertEquals(1, scriptedClient.calls)
+    }
+
     private class ScriptedClient(
         private val outputs: List<String>
     ) : AgentModelClient {

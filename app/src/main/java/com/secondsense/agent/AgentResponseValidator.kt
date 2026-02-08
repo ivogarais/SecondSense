@@ -7,7 +7,7 @@ data class ValidationIssue(
 
 object AgentResponseValidator {
 
-    private const val MAX_ACTIONS_PER_STEP = 3
+    private const val MAX_ACTIONS_PER_STEP = 1
     private const val MAX_TYPED_TEXT_LENGTH = 500
     private const val MAX_WAIT_MS = 3000
     private const val MAX_APP_NAME_LENGTH = 80
@@ -27,6 +27,9 @@ object AgentResponseValidator {
                 }
             }
             Status.DONE -> {
+                if (response.actions.isNotEmpty()) {
+                    issues += ValidationIssue("actions", "Must be empty when status is done.")
+                }
                 if (response.result.isNullOrBlank()) {
                     issues += ValidationIssue("result", "Must include a non-empty result when status is done.")
                 }
@@ -63,6 +66,9 @@ object AgentResponseValidator {
                 }
                 if (action.app.length > MAX_APP_NAME_LENGTH) {
                     issues += ValidationIssue("$prefix.app", "App name/package is too long.")
+                }
+                if (action.app.contains('.')) {
+                    issues += ValidationIssue("$prefix.app", "Use app display name (for example 'Instagram'), not package ID.")
                 }
             }
 

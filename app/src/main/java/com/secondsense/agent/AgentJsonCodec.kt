@@ -32,6 +32,10 @@ object AgentJsonCodec {
         }
     }
 
+    fun extractJsonObject(raw: String): String? {
+        return extractFirstJsonObject(raw)
+    }
+
     private fun extractFirstJsonObject(text: String): String? {
         var depth = 0
         var start = -1

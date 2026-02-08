@@ -11,8 +11,7 @@ class AgentResponseValidatorTest {
         val response = AgentResponse(
             status = Status.IN_PROGRESS,
             actions = listOf(
-                Action.OpenApp("Instagram"),
-                Action.Click(selector = Selector(textContains = "Messages"))
+                Action.OpenApp("Instagram")
             )
         )
 
@@ -89,5 +88,30 @@ class AgentResponseValidatorTest {
         val issues = AgentResponseValidator.validate(response)
 
         assertTrue(issues.any { it.field == "actions[0].ms" })
+    }
+
+    @Test
+    fun validate_doneWithActions_returnsIssue() {
+        val response = AgentResponse(
+            status = Status.DONE,
+            actions = listOf(Action.Back),
+            result = "finished"
+        )
+
+        val issues = AgentResponseValidator.validate(response)
+
+        assertTrue(issues.any { it.field == "actions" && it.message.contains("Must be empty") })
+    }
+
+    @Test
+    fun validate_openAppWithPackageId_returnsIssue() {
+        val response = AgentResponse(
+            status = Status.IN_PROGRESS,
+            actions = listOf(Action.OpenApp("com.instagram.instagram"))
+        )
+
+        val issues = AgentResponseValidator.validate(response)
+
+        assertTrue(issues.any { it.field == "actions[0].app" && it.message.contains("display name") })
     }
 }

@@ -6,6 +6,16 @@ class AgentLoopController(
     private val executeActions: (List<Action>) -> List<ActionExecutionResult>
 ) {
 
+    fun handleResponse(
+        response: AgentResponse,
+        userConfirmed: Boolean = false
+    ): LoopResult {
+        return processResponse(
+            response = response,
+            userConfirmed = userConfirmed
+        )
+    }
+
     fun handleModelOutput(
         rawModelOutput: String,
         userConfirmed: Boolean = false

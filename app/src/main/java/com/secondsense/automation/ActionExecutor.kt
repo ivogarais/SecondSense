@@ -50,35 +50,63 @@ class ActionExecutor(
     }
 
     private fun resolveLaunchIntent(appInput: String): Intent? {
-        val packageManager = service.packageManager
         val normalizedInput = appInput.trim().lowercase()
+        val launchables = queryLaunchableActivities()
 
         if (appInput.contains('.')) {
             buildLaunchIntentForPackage(appInput)?.let { return it }
+            // Recover from malformed package-like outputs such as "com.instagram.instagram".
+            fallbackQueriesFromPackageLikeInput(appInput).forEach { query ->
+                KNOWN_APP_PACKAGES[query]
+                    ?.let(::buildLaunchIntentForPackage)
+                    ?.let { return it }
+
+                findLaunchIntentByLabelOrPackage(query, launchables)?.let { return it }
+            }
         }
 
         KNOWN_APP_PACKAGES[normalizedInput]
             ?.let(::buildLaunchIntentForPackage)
             ?.let { return it }
 
-        val launchables = queryLaunchableActivities()
+        findLaunchIntentByLabelOrPackage(appInput, launchables)?.let { return it }
+        return null
+    }
+
+    private fun findLaunchIntentByLabelOrPackage(
+        query: String,
+        launchables: List<android.content.pm.ResolveInfo>
+    ): Intent? {
         var bestPackageName: String? = null
 
         launchables.forEach { resolveInfo ->
             val packageName = resolveInfo.activityInfo.packageName
-            val label = resolveInfo.loadLabel(packageManager).toString()
+            val label = resolveInfo.loadLabel(service.packageManager).toString()
 
-            if (label.equals(appInput, ignoreCase = true) || packageName.equals(appInput, ignoreCase = true)) {
+            if (label.equals(query, ignoreCase = true) || packageName.equals(query, ignoreCase = true)) {
                 bestPackageName = packageName
                 return@forEach
             }
 
-            if (bestPackageName == null && (label.contains(appInput, true) || packageName.contains(appInput, true))) {
+            if (bestPackageName == null && (label.contains(query, true) || packageName.contains(query, true))) {
                 bestPackageName = packageName
             }
         }
 
         return bestPackageName?.let(::buildLaunchIntentForPackage)
+    }
+
+    private fun fallbackQueriesFromPackageLikeInput(value: String): List<String> {
+        val lower = value.trim().lowercase()
+        val parts = lower.split('.')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it.length > 2 && it !in PACKAGE_NOISE_TOKENS }
+
+        return buildList {
+            parts.lastOrNull()?.let(::add)
+            parts.firstOrNull()?.let(::add)
+            addAll(parts)
+        }.distinct()
     }
 
     private fun buildLaunchIntentForPackage(packageName: String): Intent? {
@@ -276,6 +304,8 @@ class ActionExecutor(
         private val KNOWN_APP_PACKAGES = mapOf(
             "instagram" to "com.instagram.android"
         )
+
+        private val PACKAGE_NOISE_TOKENS = setOf("com", "app", "android", "mobile")
     }
 }
 

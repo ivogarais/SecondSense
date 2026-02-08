@@ -11,14 +11,16 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import com.secondsense.BuildConfig
 import com.secondsense.agent.Action
+import com.secondsense.agent.AgentJsonCodec
 import com.secondsense.agent.AgentLoopController
 import com.secondsense.agent.AgentRunner
 import com.secondsense.agent.LoopResult
-import com.secondsense.agent.MockAgentModelClient
 import com.secondsense.agent.PromptBuilder
 import com.secondsense.agent.RunResult
 import com.secondsense.automation.ActionExecutionResult
 import com.secondsense.automation.ActionExecutor
+import com.secondsense.debug.AgentLogStore
+import com.secondsense.llm.LocalModelProvider
 
 class MyAccessibilityService : AccessibilityService() {
 
@@ -71,6 +73,7 @@ class MyAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         Log.d(TAG, "Accessibility service connected.")
+        appendAgentLog("Accessibility service connected.")
         registerDebugReceiver()
     }
 
@@ -100,6 +103,7 @@ class MyAccessibilityService : AccessibilityService() {
         val rawModelOutput = intent.getStringExtra(EXTRA_MODEL_OUTPUT)
         if (rawModelOutput.isNullOrBlank()) {
             Log.w(TAG, "Debug broadcast missing EXTRA_MODEL_OUTPUT.")
+            appendAgentLog("Debug broadcast missing model output.")
             return
         }
 
@@ -112,11 +116,13 @@ class MyAccessibilityService : AccessibilityService() {
         val goal = intent.getStringExtra(EXTRA_USER_GOAL)
         if (goal.isNullOrBlank()) {
             Log.w(TAG, "Goal broadcast missing EXTRA_USER_GOAL.")
+            appendAgentLog("Run goal failed: missing goal text.")
             return
         }
 
         if (goalRunInProgress) {
             Log.w(TAG, "A goal run is already in progress.")
+            appendAgentLog("Run goal ignored: another run is in progress.")
             return
         }
 
@@ -125,21 +131,40 @@ class MyAccessibilityService : AccessibilityService() {
         Thread {
             goalRunInProgress = true
             try {
-                Log.d(TAG, "Starting mock goal run: $goal")
+                Log.d(TAG, "Starting local goal run: $goal")
+                appendAgentLog("Starting goal: $goal")
 
                 val runner = AgentRunner(
-                    modelClient = MockAgentModelClient(),
+                    modelClient = LocalModelProvider.get(applicationContext).plannerClient(),
                     loopController = loopController,
                     promptBuilder = PromptBuilder(),
-                    screenContextProvider = { screenContextProvider.capture() }
+                    screenContextProvider = { screenContextProvider.capture() },
+                    onPlannerStep = { trace ->
+                        appendAgentLog("Planner step=${trace.step} promptPreview=${compactForLog(trace.prompt, 2200)}")
+                        val extractedJson = AgentJsonCodec.extractJsonObject(trace.rawModelOutput)
+                        if (BuildConfig.DEBUG) {
+                            Log.d(
+                                TAG,
+                                "Planner step=${trace.step} raw=${compactForLog(trace.rawModelOutput)}"
+                            )
+                        }
+                        appendAgentLog("Planner step=${trace.step} rawPreview=${compactForLog(trace.rawModelOutput, 2200)}")
+                        if (extractedJson != null) {
+                            appendAgentLog("Planner step=${trace.step} json=${compactForLog(extractedJson, 2200)}")
+                        } else {
+                            appendAgentLog("Planner step=${trace.step} json=NOT_FOUND")
+                        }
+                    }
                 )
 
                 val runResult = runner.run(goal = goal, userConfirmed = userConfirmed)
                 logRunResult(runResult)
             } catch (t: Throwable) {
                 Log.e(TAG, "Goal run crashed: ${t.message}", t)
+                appendAgentLog("Goal run crashed: ${t.message ?: "unknown"}")
             } finally {
                 goalRunInProgress = false
+                appendAgentLog("Goal run finished.")
             }
         }.start()
     }
@@ -160,10 +185,12 @@ class MyAccessibilityService : AccessibilityService() {
             }
             registerReceiver(debugReceiver, filter, receiverFlags)
             Log.d(TAG, "Debug receiver registered. exportedInDebug=${BuildConfig.DEBUG}")
+            appendAgentLog("Debug receiver registered.")
         } else {
             @Suppress("DEPRECATION")
             registerReceiver(debugReceiver, filter)
             Log.d(TAG, "Debug receiver registered for pre-Tiramisu.")
+            appendAgentLog("Debug receiver registered.")
         }
         debugReceiverRegistered = true
     }
@@ -183,36 +210,47 @@ class MyAccessibilityService : AccessibilityService() {
         when (result) {
             is LoopResult.ActionsExecuted -> {
                 Log.d(TAG, "LoopResult.ActionsExecuted allSucceeded=${result.allSucceeded}")
+                appendAgentLog("ActionsExecuted allSucceeded=${result.allSucceeded}")
                 result.executionResults.forEach {
                     Log.d(
                         TAG,
                         "Exec: success=${it.success}, parentFallback=${it.usedParentFallback}, msg=${it.message}"
                     )
+                    appendAgentLog("Exec success=${it.success} msg=${it.message}")
                 }
             }
 
             is LoopResult.ClarificationRequired -> {
                 Log.d(TAG, "LoopResult.ClarificationRequired question=${result.question}")
+                appendAgentLog("Needs clarification: ${result.question}")
             }
 
             is LoopResult.ConfirmationRequired -> {
                 Log.d(TAG, "LoopResult.ConfirmationRequired prompt=${result.prompt}")
+                appendAgentLog("Needs confirmation: ${result.prompt}")
             }
 
             is LoopResult.DecodeFailed -> {
                 Log.e(TAG, "LoopResult.DecodeFailed reason=${result.reason}")
+                appendAgentLog("Decode failed: ${result.reason}")
+                if (!result.rawJson.isNullOrBlank()) {
+                    appendAgentLog("Decode failed rawJson=${compactForLog(result.rawJson, 1200)}")
+                }
             }
 
             is LoopResult.Done -> {
                 Log.d(TAG, "LoopResult.Done result=${result.result}")
+                appendAgentLog("Done: ${result.result}")
             }
 
             is LoopResult.ModelError -> {
                 Log.e(TAG, "LoopResult.ModelError message=${result.message}")
+                appendAgentLog("Model error: ${result.message}")
             }
 
             is LoopResult.ValidationFailed -> {
                 Log.e(TAG, "LoopResult.ValidationFailed issues=${result.issues.joinToString { "${it.field}:${it.message}" }}")
+                appendAgentLog("Validation failed: ${result.issues.joinToString { "${it.field}:${it.message}" }}")
             }
         }
     }
@@ -221,22 +259,27 @@ class MyAccessibilityService : AccessibilityService() {
         when (result) {
             is RunResult.Completed -> {
                 Log.d(TAG, "RunResult.Completed result=${result.result}")
+                appendAgentLog("Run completed: ${result.result}")
             }
 
             is RunResult.NeedsClarification -> {
                 Log.d(TAG, "RunResult.NeedsClarification question=${result.question}")
+                appendAgentLog("Run needs clarification: ${result.question}")
             }
 
             is RunResult.NeedsConfirmation -> {
                 Log.d(TAG, "RunResult.NeedsConfirmation prompt=${result.prompt}")
+                appendAgentLog("Run needs confirmation: ${result.prompt}")
             }
 
             is RunResult.MaxStepsReached -> {
                 Log.w(TAG, "RunResult.MaxStepsReached maxSteps=${result.maxSteps}")
+                appendAgentLog("Run stopped: max steps reached (${result.maxSteps}).")
             }
 
             is RunResult.Failed -> {
                 Log.e(TAG, "RunResult.Failed reason=${result.reason}, lastError=${result.lastError}")
+                appendAgentLog("Run failed: ${result.reason}. lastError=${result.lastError ?: "none"}")
             }
         }
     }
@@ -254,5 +297,18 @@ class MyAccessibilityService : AccessibilityService() {
         const val EXTRA_MODEL_OUTPUT = "extra_model_output"
         const val EXTRA_USER_GOAL = "extra_user_goal"
         const val EXTRA_USER_CONFIRMED = "extra_user_confirmed"
+    }
+
+    private fun compactForLog(value: String, maxChars: Int = 1600): String {
+        val normalized = value
+            .replace('\n', ' ')
+            .replace('\r', ' ')
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        return if (normalized.length <= maxChars) normalized else normalized.take(maxChars) + "...(truncated)"
+    }
+
+    private fun appendAgentLog(message: String) {
+        AgentLogStore.append(TAG, message)
     }
 }
